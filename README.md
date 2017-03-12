@@ -1,5 +1,5 @@
 # simple-workQ
-A prototype implementation of a very simple work queue using redis and scala.
+A prototype implementation of a very simple work queue based on redis
 
 Planning two endpoints:
 - To submit a job (which returns a unique identifier for the job)
