@@ -3,68 +3,60 @@
 import json
 import uuid
 from datetime import datetime
+import redis
 
 __author__ = 'Arun KR (@kra3)'
 
 
-class Job(object):
-    def __init__(self, content, queue_name):
-        self._content = content
-        self._id = uuid.uuid4()
-        self._orig_queue = queue_name
-        self._created_at = datetime.now()
-        return self._id
+class SimpleJobQueue(object):
 
-    def build(self):
-        res = {
-            'header': {
-                'id': self._id,
-                'orig_queue': self._orig_queue,
-                'created_at': self._created_at,
-            },
-            'payload': self._content,
-        }
-        return json.dumps(res)
+    def __init__(self, host='localhost', port=6379):
+        self._redis = redis.StrictRedis(host=host, port=port)
 
     @property
-    def job_id(self):
-        return self._id
+    def redis(self):
+        return self._redis
 
-    @staticmethod
-    def load_job(job):
-        return json.loads(job)
+    def _get_schedule_queue(self, queue_name):
+        return 'SCHED::{}'.format(queue_name)
 
+    def _get_work_queue(self, queue_name):
+        return 'WORK::{}'.format(queue_name)
 
-class Result(object):
-    def __init__(self, _id, content):
-        self._content = content
-        self._id = _id
-        self._created_at = datetime.now()
+    def _get_data_set(self, job_id):
+        return "DATA::{}".format(job_id)
 
-    def build(self):
-        res = {
-            'header': {
-                'id': self._id,
-                'created_at': self._created_at,
-            },
-            'result': self._content,
-        }
+    def _get_result_set(self, job_id):
+        return "RESULT::{}".format(job_id)
+
+    def _build_unique_id(self):
+        return uuid.uuid4().hex
+
+    def _get_timestamp(self):
+        return datetime.now().timestamp()
+
+    def package_result(self, res):
         return json.dumps(res)
-
-
-class SimpleJobQueue(object):
-    def __init__(self):
-        # set up redis connection here
-        pass
 
     def publish_to(self, queue_name):
         def _publish(func):
             def _inner(*args, **kwargs):
                 res = func(*args, **kwargs)
-                job = Job(res, queue_name)
-                # get queue and publish
-                # redis.lpush(queue_name, job.build())
-                return job.job_id
+                job_id = self._build_unique_id()
+
+                with self.redis.pipeline() as pipe:
+                    try:
+                        pipe.hmset(self._get_data_set(job_id), {
+                            'timestamp': self._get_timestamp(),
+                            'payload': self.package_result(res)
+                        })
+                        pipe.lpush(
+                            self._get_schedule_queue(queue_name), job_id)
+                        pipe.execute()
+                    except Exception as e:
+                        print(e)
+
+                return job_id
             return _inner
         return _publish
 
@@ -76,6 +68,7 @@ class SimpleJobQueue(object):
                 # msg = Job.load_job(message)
                 # res = func(msg.payload)
                 # redis.hset(msg.id, Result(msg.id, res).build())
+                pass
             return _inner
         return _subscribe
 
@@ -84,9 +77,10 @@ class SimpleJobQueue(object):
         pass
 
     def requeue(self):
-        # poll for tasks which are pending for too long and move to schedule list
+        # poll for tasks which are pending for too long and move to schedule
+        # list
         pass
 
-    def failself, job_id):
+    def fail(self, job_id):
         # fails and remove a message from work queue to fail queue
         pass
