@@ -3,12 +3,17 @@
 import json
 import uuid
 from datetime import datetime
+from multiprocessing import Process
 import redis
 
 __author__ = 'Arun KR (@kra3)'
 
 
 class SimpleJobQueue(object):
+    SCHEDULED, IN_PROGRESS, DONE, FAILED = (
+        'SCHEDULED', 'IN_PROGRESS', 'DONE', 'FAILED')
+    TIMESTAMP, PAYLOAD, STATUS, QUEUE, RESULT = (
+        'timestamp', 'payload', 'status', 'queue', 'result')
 
     def __init__(self, host='localhost', port=6379):
         self._redis = redis.StrictRedis(host=host, port=port)
@@ -25,9 +30,6 @@ class SimpleJobQueue(object):
 
     def _get_data_set(self, job_id):
         return "DATA::{}".format(job_id)
-
-    def _get_result_set(self, job_id):
-        return "RESULT::{}".format(job_id)
 
     def _build_unique_id(self):
         return uuid.uuid4().hex
@@ -47,8 +49,10 @@ class SimpleJobQueue(object):
                 with self.redis.pipeline() as pipe:
                     try:
                         pipe.hmset(self._get_data_set(job_id), {
-                            'timestamp': self._get_timestamp(),
-                            'payload': self.package_result(res)
+                            self.TIMESTAMP: self._get_timestamp(),
+                            self.QUEUE: queue_name,
+                            self.STATUS: self.SCHEDULED,
+                            self.PAYLOAD: self.package_result(res)
                         })
                         pipe.lpush(
                             self._get_schedule_queue(queue_name), job_id)
@@ -62,25 +66,57 @@ class SimpleJobQueue(object):
 
     def subscribe_to(self, queue_name):
         def _subscribe(func):
-            def _inner(*args, **kwargs):
-                # get queue, start a worker thread to poll in intervals
-                # message = redis.brpoplpush(queue_name, WORK_QUEUE, 0)
-                # msg = Job.load_job(message)
-                # res = func(msg.payload)
-                # redis.hset(msg.id, Result(msg.id, res).build())
-                pass
-            return _inner
+            def _worker():
+                while True:
+                    # move a scheduled item to work queue
+                    job_id = self.redis.brpoplpush(
+                        self._get_schedule_queue(queue_name),
+                        self._get_work_queue(queue_name), 10)
+
+                    if not job_id:
+                        continue
+                    else:
+                        job_id = job_id.decode("utf-8")
+
+                    # update timestamp
+                    self.redis.hmset(self._get_data_set(job_id), {
+                        self.TIMESTAMP: self._get_timestamp(),
+                        self.STATUS: self.IN_PROGRESS
+                    })
+
+                    payload = self.redis.hget(
+                        self._get_data_set(job_id), self.PAYLOAD)
+
+                    try:
+                        res = func(json.loads(payload))
+                    except Exception as e:
+                        self.redis.hmset(self._get_data_set(job_id), {
+                            self.TIMESTAMP: self._get_timestamp(),
+                            self.STATUS: self.FAILED,
+                            self.RESULT: self.package_result(str(e))
+                        })
+                    else:
+                        self.redis.hmset(self._get_data_set(job_id), {
+                            self.TIMESTAMP: self._get_timestamp(),
+                            self.STATUS: self.DONE,
+                            self.RESULT: self.package_result(res)
+                        })
+
+            #  start a worker thread
+            p = Process(target=_worker, args=[])
+            p.start()
+            p.join()
+
         return _subscribe
 
-    def ack(self, job_id):
-        # acks and remove a message from work queue
-        pass
+    def get_status(self, job_id):
+        key = self._get_data_set(job_id)
 
-    def requeue(self):
-        # poll for tasks which are pending for too long and move to schedule
-        # list
-        pass
-
-    def fail(self, job_id):
-        # fails and remove a message from work queue to fail queue
-        pass
+        if self.redis.exists(key):
+            status, result = self.redis.hmget(key, self.STATUS, self.RESULT)
+            res = {'status': status}
+            if result is not None:
+                res['result'] = result
+            return res
+        else:
+            return {'status': 'error', 'reason': 'job not found'}
