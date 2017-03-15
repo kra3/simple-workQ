@@ -12,15 +12,10 @@ Planning two endpoints:
 - `simpleq` module will contain simple task queue system and helpers
 - `task` is the worker, which depends on `simpleq` module. 
 
-Planning to use multiprocessing module for worker. Configurations for number of process and anyother settins will be
-passed on to `subscribe_to` decorator. Which will be spawning processes accordingly.
+Every published message will be kept in a hash with associated meta data and it's job id will be put into schedule queue.
 
-Every published message will be put into corresponding queue
-Worker will be listening, once item is available in the queue it will be moved to corresponding work queue
-eg: queue1 -> w::queue1
+Subscriber process will fetch jobs from schedule queue and move into work queue. Meta data (such as timestamp and status) will be updated with each step.
 
-Once, a worker successfully process the message, it has to ack back.
-Which will remove the message from worker queue. then the result has to be stored in result queue in same transaction.
+PS: another thread is needed which should go through worker queue and move long running jobs back to schedule queue. We could spawn it in the subscribe decorator itself, or better kept outside as a separate process.
 
-
-
+I'd prefer later, then we have to keep track of queues with subscribers and iterate on corresponding work queues only.
